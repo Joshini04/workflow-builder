@@ -45,8 +45,8 @@ const RESUME_RUN = gql`
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { step_run_id } = req.body;
-  const userId = req.headers['x-hasura-user-id'];
+  const step_run_id = req.body.input?.step_run_id;
+  const userId = req.body.session_variables?.['x-hasura-user-id'];
 
   if (!step_run_id || !userId) return res.status(400).json({ error: 'Missing step_run_id or user' });
 

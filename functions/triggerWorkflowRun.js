@@ -149,8 +149,8 @@ async function executeStepWithRetry(step, previousOutput) {
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { workflow_id } = req.body;
-  const userId = req.headers['x-hasura-user-id'];
+  const workflow_id = req.body.input?.workflow_id;
+  const userId = req.body.session_variables?.['x-hasura-user-id'];
 
   if (!workflow_id || !userId) {
     return res.status(400).json({ error: 'Missing workflow_id or user' });
