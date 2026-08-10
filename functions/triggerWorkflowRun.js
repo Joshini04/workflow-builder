@@ -1,7 +1,7 @@
 import { GraphQLClient, gql } from 'graphql-request';
 
-const client = new GraphQLClient(process.env.HASURA_GRAPHQL_URL, {
-  headers: { 'x-hasura-admin-secret': process.env.HASURA_ADMIN_SECRET },
+const client = new GraphQLClient(process.env.MY_HASURA_GRAPHQL_URL, {
+  headers: { 'x-hasura-admin-secret': process.env.MY_HASURA_ADMIN_SECRET },
 });
 
 const CHECK_QUERY = gql`
@@ -71,7 +71,7 @@ const INCREMENT_QUOTA = gql`
 
 async function executeLlmCall(config, previousOutput) {
   const prompt = config.prompt || 'Summarize this input';
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.MY_OPENROUTER_API_KEY;
 
   if (!apiKey) {
     // Stubbed fallback if no key configured — disclosed in README

@@ -1,7 +1,7 @@
 import { GraphQLClient, gql } from 'graphql-request';
 
-const client = new GraphQLClient(process.env.HASURA_GRAPHQL_URL, {
-  headers: { 'x-hasura-admin-secret': process.env.HASURA_ADMIN_SECRET },
+const client = new GraphQLClient(process.env.MY_HASURA_GRAPHQL_URL, {
+  headers: { 'x-hasura-admin-secret': process.env.MY_HASURA_ADMIN_SECRET },
 });
 
 const GET_STEP_RUN = gql`
