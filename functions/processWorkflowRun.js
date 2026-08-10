@@ -23,6 +23,23 @@ const GET_RUN = gql`
   }
 `;
 
+// NEW: lets us figure out how far a run has already progressed
+const GET_STEP_RUNS = gql`
+  query GetStepRuns($run_id: uuid!) {
+    step_runs(
+      where: { workflow_run_id: { _eq: $run_id } }
+      order_by: { step: { step_order: asc } }
+    ) {
+      id
+      status
+      output
+      step {
+        step_order
+      }
+    }
+  }
+`;
+
 const CREATE_STEP_RUN = gql`
   mutation CreateStepRun($workflow_run_id: uuid!, $step_id: uuid!, $status: String!, $input: jsonb) {
     insert_step_runs_one(object: {
@@ -128,7 +145,29 @@ async function executeStepWithRetry(step, previousOutput) {
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const runId = req.body?.event?.data?.new?.id;
+  const tableName = req.body?.table?.name;
+  const eventData = req.body?.event?.data;
+  let runId;
+
+  // This function now gets called from TWO different triggers, so first figure out which one fired
+  if (tableName === 'workflow_runs') {
+    // A brand new run was created (manual button or webhook curl) -> process step 1
+    runId = eventData?.new?.id;
+  } else if (tableName === 'step_runs') {
+    // A step finished -> only continue if it just became 'success'
+    const newRow = eventData?.new;
+    const oldRow = eventData?.old;
+    if (!newRow || newRow.status !== 'success') {
+      return res.status(200).json({ message: 'Ignored - not a success transition' });
+    }
+    if (oldRow && oldRow.status === 'success') {
+      return res.status(200).json({ message: 'Ignored - already processed' });
+    }
+    runId = newRow.workflow_run_id;
+  } else {
+    return res.status(400).json({ error: 'Unknown source table' });
+  }
+
   if (!runId) return res.status(400).json({ error: 'Missing run id' });
 
   try {
@@ -138,46 +177,63 @@ export default async function handler(req, res) {
 
     const steps = run.workflow.workflow_steps;
     const orgId = run.workflow.org_id;
-    let previousOutput = null;
 
-    for (const step of steps) {
-      const stepRunResult = await client.request(CREATE_STEP_RUN, {
-        workflow_run_id: runId,
-        step_id: step.id,
-        status: 'running',
-        input: previousOutput,
-      });
-      const stepRunId = stepRunResult.insert_step_runs_one.id;
+    // Figure out how many steps have already succeeded, so we know which one is next
+    const progress = await client.request(GET_STEP_RUNS, { run_id: runId });
+    const completedStepRuns = progress.step_runs.filter((sr) => sr.status === 'success');
+    const nextIndex = completedStepRuns.length;
 
-      if (step.type === 'approval_gate') {
-        await client.request(UPDATE_STEP_RUN, {
-          id: stepRunId, status: 'paused', output: null, error: null, attempt_count: 0,
-        });
-        await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'paused' });
-        return res.status(200).json({ message: 'Paused at approval_gate' });
-      }
-
-      const stepResult = await executeStepWithRetry(step, previousOutput);
-      await client.request(UPDATE_STEP_RUN, {
-        id: stepRunId,
-        status: stepResult.status,
-        output: stepResult.output || null,
-        error: stepResult.error || null,
-        attempt_count: stepResult.attempt_count,
-      });
-
-      if (stepResult.status === 'failed') {
-        await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'failed' });
-        return res.status(200).json({ message: 'Run failed' });
-      }
-
-      previousOutput = stepResult.output;
+    if (nextIndex >= steps.length) {
+      // Every step is done
+      await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'completed' });
+      await client.request(INCREMENT_QUOTA, { org_id: orgId });
+      return res.status(200).json({ message: 'Completed' });
     }
 
-    await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'completed' });
-    await client.request(INCREMENT_QUOTA, { org_id: orgId });
-    return res.status(200).json({ message: 'Completed' });
+    const step = steps[nextIndex];
+    const previousOutput =
+      completedStepRuns.length > 0
+        ? completedStepRuns[completedStepRuns.length - 1].output
+        : null;
 
+    if (step.type === 'approval_gate') {
+      await client.request(CREATE_STEP_RUN, {
+        workflow_run_id: runId,
+        step_id: step.id,
+        status: 'paused',
+        input: previousOutput,
+      });
+      await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'paused' });
+      return res.status(200).json({ message: 'Paused at approval_gate' });
+    }
+
+    // Process just this ONE step
+    const stepRunResult = await client.request(CREATE_STEP_RUN, {
+      workflow_run_id: runId,
+      step_id: step.id,
+      status: 'running',
+      input: previousOutput,
+    });
+    const stepRunId = stepRunResult.insert_step_runs_one.id;
+
+    const stepResult = await executeStepWithRetry(step, previousOutput);
+
+    await client.request(UPDATE_STEP_RUN, {
+      id: stepRunId,
+      status: stepResult.status,
+      output: stepResult.output || null,
+      error: stepResult.error || null,
+      attempt_count: stepResult.attempt_count,
+    });
+
+    if (stepResult.status === 'failed') {
+      await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'failed' });
+      return res.status(200).json({ message: 'Step failed, run marked failed' });
+    }
+
+    // Success! The UPDATE_STEP_RUN call above just fired the step_runs event trigger,
+    // which will call this same function again for the NEXT step automatically.
+    return res.status(200).json({ message: `Step ${step.type} done, next step triggered` });
   } catch (err) {
     console.error('processWorkflowRun error:', err);
     await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'failed' }).catch(() => {});

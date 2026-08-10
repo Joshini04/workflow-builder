@@ -38,7 +38,7 @@ const APPROVE_STEP_RUN = gql`
 
 const RESUME_RUN = gql`
   mutation ResumeRun($id: uuid!) {
-    update_workflow_runs_by_pk(pk_columns: { id: $id }, _set: { status: "completed" }) { id }
+    update_workflow_runs_by_pk(pk_columns: { id: $id }, _set: { status: "running" }) { id }
   }
 `;
 
