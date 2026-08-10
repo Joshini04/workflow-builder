@@ -74,12 +74,11 @@ async function executeLlmCall(config, previousOutput) {
   const apiKey = process.env.MY_OPENROUTER_API_KEY;
 
   if (!apiKey) {
-    // Stubbed fallback if no key configured — disclosed in README
     await new Promise((r) => setTimeout(r, 1000));
     return { stubbed: true, result: 'Stubbed LLM response (no API key configured)', rating: 8 };
   }
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -113,7 +112,6 @@ async function executeHttpRequest(config) {
 }
 
 function executeConditionalBranch(config, previousOutput) {
-  // Simple example: config = { field: "rating", operator: ">=", value: 7 }
   const value = previousOutput?.[config.field];
   let result = false;
   if (config.operator === '>=') result = value >= config.value;
@@ -144,6 +142,54 @@ async function executeStepWithRetry(step, previousOutput) {
   return { status: 'failed', error: lastError, attempt_count: attempt };
 }
 
+// --- Background step processor (runs after response is sent) ---
+
+async function processStepsInBackground(runId, workflow) {
+  let previousOutput = null;
+
+  try {
+    for (const step of workflow.workflow_steps) {
+      const stepRunResult = await client.request(CREATE_STEP_RUN, {
+        workflow_run_id: runId,
+        step_id: step.id,
+        status: 'running',
+        input: previousOutput,
+      });
+      const stepRunId = stepRunResult.insert_step_runs_one.id;
+
+      if (step.type === 'approval_gate') {
+        await client.request(UPDATE_STEP_RUN, {
+          id: stepRunId, status: 'paused', output: null, error: null, attempt_count: 0,
+        });
+        await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'paused' });
+        return; // stop here, wait for approval
+      }
+
+      const result = await executeStepWithRetry(step, previousOutput);
+      await client.request(UPDATE_STEP_RUN, {
+        id: stepRunId,
+        status: result.status,
+        output: result.output || null,
+        error: result.error || null,
+        attempt_count: result.attempt_count,
+      });
+
+      if (result.status === 'failed') {
+        await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'failed' });
+        return;
+      }
+
+      previousOutput = result.output;
+    }
+
+    await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'completed' });
+    await client.request(INCREMENT_QUOTA, { org_id: workflow.org_id });
+  } catch (err) {
+    console.error('Background processing error:', err);
+    await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'failed' });
+  }
+}
+
 // --- Main handler ---
 
 export default async function handler(req, res) {
@@ -171,55 +217,21 @@ export default async function handler(req, res) {
       return res.status(429).json({ error: 'Organization quota exceeded' });
     }
 
+    // Create the run row immediately
     const runResult = await client.request(CREATE_RUN, { workflow_id, user_id: userId });
     const runId = runResult.insert_workflow_runs_one.id;
 
-    let previousOutput = null;
-    let paused = false;
+    // Return run_id immediately — steps run in background
+    res.status(200).json({ run_id: runId, status: 'running', message: 'Workflow started' });
 
-    for (const step of workflow.workflow_steps) {
-      const stepRunResult = await client.request(CREATE_STEP_RUN, {
-        workflow_run_id: runId,
-        step_id: step.id,
-        status: 'running',
-        input: previousOutput,
-      });
-      const stepRunId = stepRunResult.insert_step_runs_one.id;
+    // Process steps after response is sent
+    await processStepsInBackground(runId, workflow);
 
-      if (step.type === 'approval_gate') {
-        await client.request(UPDATE_STEP_RUN, {
-          id: stepRunId, status: 'paused', output: null, error: null, attempt_count: 0,
-        });
-        await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'paused' });
-        paused = true;
-        break;
-      }
-
-      const result = await executeStepWithRetry(step, previousOutput);
-      await client.request(UPDATE_STEP_RUN, {
-        id: stepRunId,
-        status: result.status,
-        output: result.output || null,
-        error: result.error || null,
-        attempt_count: result.attempt_count,
-      });
-
-      if (result.status === 'failed') {
-        await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'failed' });
-        return res.status(200).json({ run_id: runId, status: 'failed', failedStep: step.type });
-      }
-
-      previousOutput = result.output;
-    }
-
-    if (!paused) {
-      await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'completed' });
-      await client.request(INCREMENT_QUOTA, { org_id: workflow.org_id });
-    }
-
-    return res.status(200).json({ run_id: runId, status: paused ? 'paused' : 'completed' });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: err.message });
+    // Only send error response if we haven't responded yet
+    if (!res.headersSent) {
+      return res.status(500).json({ error: err.message });
+    }
   }
 }
