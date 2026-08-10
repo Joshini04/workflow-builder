@@ -128,18 +128,13 @@ async function executeStepWithRetry(step, previousOutput) {
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  // Event trigger payload: req.body.event.data.new
   const runId = req.body?.event?.data?.new?.id;
-
   if (!runId) return res.status(400).json({ error: 'Missing run id' });
-
-  // Acknowledge immediately so Hasura doesn't retry
-  res.status(200).json({ message: 'Processing started' });
 
   try {
     const result = await client.request(GET_RUN, { run_id: runId });
     const run = result.workflow_runs_by_pk;
-    if (!run) return;
+    if (!run) return res.status(404).json({ error: 'Run not found' });
 
     const steps = run.workflow.workflow_steps;
     const orgId = run.workflow.org_id;
@@ -159,7 +154,7 @@ export default async function handler(req, res) {
           id: stepRunId, status: 'paused', output: null, error: null, attempt_count: 0,
         });
         await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'paused' });
-        return;
+        return res.status(200).json({ message: 'Paused at approval_gate' });
       }
 
       const stepResult = await executeStepWithRetry(step, previousOutput);
@@ -173,7 +168,7 @@ export default async function handler(req, res) {
 
       if (stepResult.status === 'failed') {
         await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'failed' });
-        return;
+        return res.status(200).json({ message: 'Run failed' });
       }
 
       previousOutput = stepResult.output;
@@ -181,8 +176,11 @@ export default async function handler(req, res) {
 
     await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'completed' });
     await client.request(INCREMENT_QUOTA, { org_id: orgId });
+    return res.status(200).json({ message: 'Completed' });
+
   } catch (err) {
     console.error('processWorkflowRun error:', err);
     await client.request(UPDATE_RUN_STATUS, { id: runId, status: 'failed' }).catch(() => {});
+    return res.status(500).json({ error: err.message });
   }
 }
