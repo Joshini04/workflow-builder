@@ -79,14 +79,14 @@ async function executeLlmCall(config, previousOutput) {
     return { stubbed: true, result: 'Stubbed LLM response (no API key configured)', rating: 8 };
   }
 
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'meta-llama/llama-3.3-70b-instruct:free',
+      model: 'nvidia/nemotron-nano-9b-v2:free',
       messages: [{ role: 'user', content: `${prompt}\n\nInput: ${JSON.stringify(previousOutput)}` }],
     }),
   });
