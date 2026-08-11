@@ -84,6 +84,7 @@ if (authLoading || loading) return <p style={{ padding: 40 }}>Loading...</p>;
           <div key={wf.id} style={{ border: '1px solid #ccc', padding: 16, marginBottom: 16, borderRadius: 8 }}>
             <h3>{wf.name}</h3>
             <p>{wf.workflow_steps.length} steps: {wf.workflow_steps.map((s) => s.type).join(' → ')}</p>
+            <Link href={`/workflows/${wf.id}`}>Edit workflow →</Link>
 
             {membership.role !== 'viewer' && (
               <button onClick={() => handleRun(wf.id)} disabled={triggering}>

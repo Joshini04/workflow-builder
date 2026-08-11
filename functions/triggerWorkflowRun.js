@@ -1,3 +1,5 @@
+// redeploy trigger
+
 import { GraphQLClient, gql } from 'graphql-request';
 
 const client = new GraphQLClient(process.env.MY_HASURA_GRAPHQL_URL, {
