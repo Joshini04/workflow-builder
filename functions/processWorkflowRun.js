@@ -28,12 +28,12 @@ const GET_STEP_RUNS = gql`
   query GetStepRuns($run_id: uuid!) {
     step_runs(
       where: { workflow_run_id: { _eq: $run_id } }
-      order_by: { step: { step_order: asc } }
+      order_by: { workflow_step: { step_order: asc } }
     ) {
       id
       status
       output
-      step {
+      workflow_step {
         step_order
       }
     }
